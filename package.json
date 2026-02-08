@@ -2,12 +2,13 @@
   "name": "roleta-immersive-proxy",
   "version": "1.0.0",
   "private": true,
+  "description": "Proxy simples (Node) para puxar a API da Roleta Immersiva com Basic Auth e devolver JSON estável.",
   "main": "index.js",
   "type": "commonjs",
-  "scripts": {
-    "start": "node index.js"
-  },
   "engines": {
     "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
   }
 }
