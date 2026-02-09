@@ -1,79 +1,72 @@
 import express from "express";
-
 const app = express();
 
-/**
- * ENV esperadas:
- * - UPSTREAM_BASE   (ex: "https://api-exemplo.com")  OU
- * - UPSTREAM_TEMPLATE (ex: "https://api-exemplo.com/{slug}/result.json")
- * - BASIC_USER
- * - BASIC_PASS
- * - ALLOW_ORIGINS (opcional) "*" ou lista separada por vírgula
- * - PORT (Render injeta)
- */
-
-function pickSlug(input) {
-  if (!input) return null;
-  // mantém só chars seguros básicos
-  return String(input).trim();
-}
-
-function getAllowedOrigin(reqOrigin) {
-  const raw = (process.env.ALLOW_ORIGINS || "*").trim();
-  if (raw === "*") return "*";
-  const list = raw.split(",").map(s => s.trim()).filter(Boolean);
-  if (!reqOrigin) return list[0] || "*";
-  return list.includes(reqOrigin) ? reqOrigin : (list[0] || "*");
-}
-
+/* CORS */
 function setCors(req, res) {
-  const origin = req.headers.origin;
-  const allow = getAllowedOrigin(origin);
+  const allow = (process.env.ALLOW_ORIGIN || "*").trim() || "*";
   res.setHeader("Access-Control-Allow-Origin", allow);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
+function pickSlug(input) {
+  return (input == null ? "" : String(input)).trim();
+}
+
+// ✅ ALTERADO: aceita {slug} OU ${slug} no template (pra não te ferrar por detalhe)
 function buildUpstreamUrl(slug) {
   const tpl = (process.env.UPSTREAM_TEMPLATE || "").trim();
   const base = (process.env.UPSTREAM_BASE || "").trim();
 
-  // prioridade: template
   if (tpl) {
-    return tpl.replace("{slug}", encodeURIComponent(slug));
+    return tpl
+      .replace("{slug}", encodeURIComponent(slug))
+      .replace("${slug}", encodeURIComponent(slug));
   }
-
-  // fallback: base + /{slug}/result.json
   if (base) {
     const b = base.endsWith("/") ? base.slice(0, -1) : base;
     return `${b}/${encodeURIComponent(slug)}/result.json`;
   }
-
   return "";
 }
 
+// ✅ ALTERADO: debug seguro (não vaza senha), mas confirma se auth existe e tamanho
+function getAuthInfo() {
+  const uRaw = process.env.BASIC_USER ?? "";
+  const pRaw = process.env.BASIC_PASS ?? "";
+  const u = String(uRaw).trim();
+  const p = String(pRaw).trim();
+
+  const hasUser = u.length > 0;
+  const hasPass = p.length > 0;
+
+  // Não retorna credenciais, só “tem/não tem” e tamanhos
+  return { hasUser, hasPass, userLen: u.length, passLen: p.length, userHead: u.slice(0, 2) };
+}
+
 function makeBasicAuthHeader() {
-  const u = (process.env.BASIC_USER || "").trim();
-  const p = (process.env.BASIC_PASS || "").trim();
+  const u = String(process.env.BASIC_USER ?? "").trim();
+  const p = String(process.env.BASIC_PASS ?? "").trim();
   if (!u || !p) return null;
   const token = Buffer.from(`${u}:${p}`).toString("base64");
   return `Basic ${token}`;
 }
 
-async function fetchUpstream(url) {
-  const auth = makeBasicAuthHeader();
+async function fetchUpstream(url, withAuth) {
+  const auth = withAuth ? makeBasicAuthHeader() : null;
 
   const headers = {
     "Accept": "application/json, text/plain, */*",
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": "Mozilla/5.0",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
   };
   if (auth) headers["Authorization"] = auth;
 
-  const r = await fetch(url, { method: "GET", headers });
+  const r = await fetch(url, { method: "GET", headers, redirect: "follow" });
   const text = await r.text();
 
-  // tenta parse JSON, mas não quebra se vier texto
   let json = null;
   try { json = JSON.parse(text); } catch {}
 
@@ -81,36 +74,71 @@ async function fetchUpstream(url) {
 }
 
 function normalizeItems(parsed) {
-  // upstream pode vir: array, {items:[]}, ou qualquer outra estrutura
   if (Array.isArray(parsed)) return parsed;
   if (parsed && typeof parsed === "object" && Array.isArray(parsed.items)) return parsed.items;
   return [];
 }
 
+/* OPTIONS */
+app.options("*", (req, res) => {
+  setCors(req, res);
+  res.status(204).send("");
+});
+
+/* ✅ DEBUG */
+app.get("/debug", async (req, res) => {
+  setCors(req, res);
+
+  const slug = pickSlug(req.query.slug) || "Roleta-Imersiva";
+  const upstreamUrl = buildUpstreamUrl(slug);
+
+  const env = {
+    hasTemplate: !!String(process.env.UPSTREAM_TEMPLATE ?? "").trim(),
+    hasBase: !!String(process.env.UPSTREAM_BASE ?? "").trim(),
+    upstreamUrl,
+    auth: getAuthInfo(),
+  };
+
+  if (!upstreamUrl) {
+    return res.status(500).json({ ok: false, hint: "Sem UPSTREAM_TEMPLATE/UPSTREAM_BASE", env });
+  }
+
+  // ✅ Faz dois testes: sem auth e com auth (isso prova se o header tá entrando)
+  try {
+    const noAuth = await fetchUpstream(upstreamUrl, false);
+    const withAuth = await fetchUpstream(upstreamUrl, true);
+
+    return res.json({
+      ok: true,
+      env,
+      test_noAuth: { status: noAuth.status, body_head: String(noAuth.text || "").slice(0, 140) },
+      test_withAuth: { status: withAuth.status, body_head: String(withAuth.text || "").slice(0, 140) },
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, env, error: String(e?.message || e) });
+  }
+});
+
+/* MAIN */
 app.get("/", async (req, res) => {
   setCors(req, res);
 
+  const slug = pickSlug(req.query.slug) || "Roleta-Imersiva";
+  const upstreamUrl = buildUpstreamUrl(slug);
+
+  if (!upstreamUrl) {
+    return res.status(500).json({
+      ok: false,
+      status: 500,
+      hint: "UPSTREAM env var vazio (defina UPSTREAM_BASE ou UPSTREAM_TEMPLATE)",
+      items: [],
+      slug
+    });
+  }
+
   try {
-    // slug pode vir por query (?slug=...) ou por path (/Roleta-Imersiva)
-    const qSlug = pickSlug(req.query.slug);
-    const pSlug = pickSlug(req.path?.replace("/", ""));
-    const slug = qSlug || (pSlug && pSlug.length > 0 ? pSlug : "Roleta-Imersiva");
+    const out = await fetchUpstream(upstreamUrl, true);
 
-    const upstreamUrl = buildUpstreamUrl(slug);
-
-    if (!upstreamUrl) {
-      return res.status(500).json({
-        ok: false,
-        status: 500,
-        hint: "UPSTREAM env var vazio (defina UPSTREAM_BASE ou UPSTREAM_TEMPLATE)",
-        items: [],
-        slug
-      });
-    }
-
-    const out = await fetchUpstream(upstreamUrl);
-
-    // Se upstream não for 200, devolve diagnóstico
     if (out.status < 200 || out.status >= 300) {
       return res.status(502).json({
         ok: false,
@@ -144,19 +172,5 @@ app.get("/", async (req, res) => {
   }
 });
 
-// suporte: /Roleta-Imersiva ou /Immersive-Roulette etc
-app.get("/:slug", async (req, res) => {
-  // reaproveita a lógica chamando /
-  req.query.slug = req.params.slug;
-  return app._router.handle(req, res, () => {});
-});
-
-app.options("*", (req, res) => {
-  setCors(req, res);
-  res.status(204).send("");
-});
-
 const port = process.env.PORT || 10000;
-app.listen(port, () => {
-  console.log("Proxy on port", port);
-});
+app.listen(port, () => console.log("Proxy on port", port));
