@@ -14,7 +14,7 @@ function pickSlug(input) {
   return (input == null ? "" : String(input)).trim();
 }
 
-// ✅ ALTERADO: aceita {slug} OU ${slug} no template (pra não te ferrar por detalhe)
+// aceita {slug} OU ${slug}
 function buildUpstreamUrl(slug) {
   const tpl = (process.env.UPSTREAM_TEMPLATE || "").trim();
   const base = (process.env.UPSTREAM_BASE || "").trim();
@@ -31,18 +31,11 @@ function buildUpstreamUrl(slug) {
   return "";
 }
 
-// ✅ ALTERADO: debug seguro (não vaza senha), mas confirma se auth existe e tamanho
+// debug seguro (não vaza senha)
 function getAuthInfo() {
-  const uRaw = process.env.BASIC_USER ?? "";
-  const pRaw = process.env.BASIC_PASS ?? "";
-  const u = String(uRaw).trim();
-  const p = String(pRaw).trim();
-
-  const hasUser = u.length > 0;
-  const hasPass = p.length > 0;
-
-  // Não retorna credenciais, só “tem/não tem” e tamanhos
-  return { hasUser, hasPass, userLen: u.length, passLen: p.length, userHead: u.slice(0, 2) };
+  const u = String(process.env.BASIC_USER ?? "").trim();
+  const p = String(process.env.BASIC_PASS ?? "").trim();
+  return { hasUser: !!u, hasPass: !!p, userLen: u.length, passLen: p.length, userHead: u.slice(0, 2) };
 }
 
 function makeBasicAuthHeader() {
@@ -56,11 +49,16 @@ function makeBasicAuthHeader() {
 async function fetchUpstream(url, withAuth) {
   const auth = withAuth ? makeBasicAuthHeader() : null;
 
+  // Headers “browser-like”
   const headers = {
     "Accept": "application/json, text/plain, */*",
-    "User-Agent": "Mozilla/5.0",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Referer": "http://189.1.172.114/",
+    "Connection": "keep-alive",
   };
   if (auth) headers["Authorization"] = auth;
 
@@ -85,11 +83,12 @@ app.options("*", (req, res) => {
   res.status(204).send("");
 });
 
-/* ✅ DEBUG */
+/* DEBUG */
 app.get("/debug", async (req, res) => {
   setCors(req, res);
 
-  const slug = pickSlug(req.query.slug) || "Roleta-Imersiva";
+  // ✅ DEFAULT COM 2M
+  const slug = pickSlug(req.query.slug) || "Roleta-Immersiva";
   const upstreamUrl = buildUpstreamUrl(slug);
 
   const env = {
@@ -103,7 +102,6 @@ app.get("/debug", async (req, res) => {
     return res.status(500).json({ ok: false, hint: "Sem UPSTREAM_TEMPLATE/UPSTREAM_BASE", env });
   }
 
-  // ✅ Faz dois testes: sem auth e com auth (isso prova se o header tá entrando)
   try {
     const noAuth = await fetchUpstream(upstreamUrl, false);
     const withAuth = await fetchUpstream(upstreamUrl, true);
@@ -123,7 +121,8 @@ app.get("/debug", async (req, res) => {
 app.get("/", async (req, res) => {
   setCors(req, res);
 
-  const slug = pickSlug(req.query.slug) || "Roleta-Imersiva";
+  // ✅ DEFAULT COM 2M
+  const slug = pickSlug(req.query.slug) || "Roleta-Immersiva";
   const upstreamUrl = buildUpstreamUrl(slug);
 
   if (!upstreamUrl) {
